@@ -37,6 +37,10 @@ export SALT_MINION_KEYS_DIR="${SALT_KEYS_DIR:?}/${SALT_MINION_ID}"
 
 export SALT_LOG_ROTATE_FREQUENCY=${SALT_LOG_ROTATE_FREQUENCY:-weekly}
 export SALT_LOG_ROTATE_RETENTION=${SALT_LOG_ROTATE_RETENTION:-52}
+export SALT_CRON_ENABLED=${SALT_CRON_ENABLED:-True}
+if [[ "${SALT_RUN_AS_NONROOT,,}" == true ]]; then
+  export SALT_CRON_ENABLED=False
+fi
 
 # https://docs.saltstack.com/en/latest/ref/configuration/master.html
 export SALT_RESTART_MASTER_ON_CONFIG_CHANGE=${SALT_RESTART_MASTER_ON_CONFIG_CHANGE:-False}

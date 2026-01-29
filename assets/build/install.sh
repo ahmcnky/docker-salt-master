@@ -107,8 +107,8 @@ priority=20
 directory=/tmp
 command=/usr/sbin/cron -f
 user=%(ENV_SALT_SUPERVISOR_USER)s
-autostart=true
-autorestart=true
+autostart=%(ENV_SALT_CRON_ENABLED)s
+autorestart=%(ENV_SALT_CRON_ENABLED)s
 stdout_logfile=%(ENV_SALT_LOGS_DIR)s/supervisor/%(program_name)s.log
 stderr_logfile=%(ENV_SALT_LOGS_DIR)s/supervisor/%(program_name)s.log
 EOF

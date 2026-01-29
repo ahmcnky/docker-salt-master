@@ -849,6 +849,26 @@ EOF
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  configure_cron
+#   DESCRIPTION:  Enable/disable cron service.
+#----------------------------------------------------------------------------------------------------------------------
+function configure_cron() {
+  if is_nonroot; then
+    if [[ "${SALT_CRON_ENABLED,,}" == true ]]; then
+      log_warn "Non-root mode: cron cannot run, disabling."
+    else
+      log_info "Non-root mode: cron disabled."
+    fi
+    export SALT_CRON_ENABLED=False
+    return 0
+  fi
+
+  if [[ "${SALT_CRON_ENABLED,,}" != true ]]; then
+    log_info "Cron service disabled."
+  fi
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  configure_config_reloader
 #   DESCRIPTION:  Configure config reloader.
 #----------------------------------------------------------------------------------------------------------------------
@@ -916,6 +936,7 @@ function initialize_system() {
   map_uidgid
   initialize_datadir
   configure_logrotate
+  configure_cron
   configure_timezone
   configure_salt_master
   setup_salt_keys
