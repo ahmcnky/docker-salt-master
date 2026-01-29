@@ -87,7 +87,7 @@ cat >/etc/supervisor/conf.d/salt-master.conf <<EOF
 priority=5
 directory=/tmp
 command=/usr/bin/salt-master
-user=root
+user=%(ENV_SALT_SUPERVISOR_USER)s
 autostart=true
 autorestart=true
 startsecs=5
@@ -106,7 +106,7 @@ cat >/etc/supervisor/conf.d/cron.conf <<EOF
 priority=20
 directory=/tmp
 command=/usr/sbin/cron -f
-user=root
+user=%(ENV_SALT_SUPERVISOR_USER)s
 autostart=true
 autorestart=true
 stdout_logfile=%(ENV_SALT_LOGS_DIR)s/supervisor/%(program_name)s.log

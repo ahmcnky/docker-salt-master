@@ -6,6 +6,21 @@ export PGID=${PGID:-1000}
 export DEBUG=${DEBUG:-False}
 export TIMEZONE=${TIMEZONE:-${TZ:-UTC}}
 
+export SALT_RUN_AS_NONROOT=${SALT_RUN_AS_NONROOT:-False}
+if [[ "${SALT_RUN_AS_NONROOT,,}" != true && "$(id -u)" -ne 0 ]]; then
+  export SALT_RUN_AS_NONROOT=True
+fi
+
+if [[ "${SALT_RUN_AS_NONROOT,,}" == true ]]; then
+  export SALT_SUPERVISOR_USER=${SALT_SUPERVISOR_USER:-${SALT_USER}}
+  export SALT_SUPERVISOR_PIDFILE=${SALT_SUPERVISOR_PIDFILE:-/tmp/supervisord.pid}
+  export SALT_SUPERVISOR_SOCK=${SALT_SUPERVISOR_SOCK:-/tmp/supervisor.sock}
+else
+  export SALT_SUPERVISOR_USER=${SALT_SUPERVISOR_USER:-root}
+  export SALT_SUPERVISOR_PIDFILE=${SALT_SUPERVISOR_PIDFILE:-/var/run/supervisord.pid}
+  export SALT_SUPERVISOR_SOCK=${SALT_SUPERVISOR_SOCK:-/var/run/supervisor.sock}
+fi
+
 #####            Salt API            #####
 export SALT_API_ENABLED=${SALT_API_ENABLED:False}
 if [[ -z ${SALT_API_USER+x} ]]; then

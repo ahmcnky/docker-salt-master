@@ -11,11 +11,22 @@ source "${ENV_DEFAULTS_FILE}"
 SELF_MANAGED_BLOCK_STRING="## cdalvaro managed block"
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  is_nonroot
+#   DESCRIPTION:  Check whether the container is running in non-root mode.
+#----------------------------------------------------------------------------------------------------------------------
+function is_nonroot() {
+  if [[ "${SALT_RUN_AS_NONROOT,,}" == true ]]; then
+    return 0
+  fi
+  [[ "$(id -u)" -ne 0 ]]
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  exec_as_salt
 #   DESCRIPTION:  Execute the pass command as the `SALT_USER` user.
 #----------------------------------------------------------------------------------------------------------------------
 function exec_as_salt() {
-  if [[ $(whoami) == "${SALT_USER}" ]]; then
+  if [[ $(whoami) == "${SALT_USER}" ]] || [[ "$(id -u)" -ne 0 ]]; then
     "$@"
   else
     sudo -HEu "${SALT_USER}" "$@"
@@ -79,6 +90,11 @@ function log_deprecated() {
 #   DESCRIPTION:  Map salt user with host user.
 #----------------------------------------------------------------------------------------------------------------------
 function map_uidgid() {
+  if is_nonroot; then
+    log_info "Skipping UID/GID mapping because container is running as non-root."
+    return 0
+  fi
+
   ORIG_PUID=$(id -u "${SALT_USER}")
   ORIG_PGID=$(id -g "${SALT_USER}")
   PGID=${PGID:-${PUID:-$ORIG_PGID}}
@@ -140,6 +156,11 @@ function update_template() {
 #   DESCRIPTION:  Configure containers timezone.
 #----------------------------------------------------------------------------------------------------------------------
 function configure_timezone() {
+  if is_nonroot; then
+    log_info "Non-root mode: skipping timezone configuration."
+    return 0
+  fi
+
   log_info "Configuring container timezone ..."
 
   # Perform sanity check of provided timezone value
@@ -397,8 +418,12 @@ function _setup_gpgkeys() {
 
   local SALT_GPGKEYS_DIR="${SALT_ROOT_DIR}"/gpgkeys
   mkdir -p "${SALT_GPGKEYS_DIR}"
-  chown "${SALT_USER}:${SALT_USER}" "${SALT_GPGKEYS_DIR}"
-  chmod 700 "${SALT_GPGKEYS_DIR}"
+  if is_nonroot; then
+    chmod 700 "${SALT_GPGKEYS_DIR}" || log_warn "  Unable to set permissions on '${SALT_GPGKEYS_DIR}'."
+  else
+    chown "${SALT_USER}:${SALT_USER}" "${SALT_GPGKEYS_DIR}"
+    chmod 700 "${SALT_GPGKEYS_DIR}"
+  fi
 
   local GPG_COMMON_OPTS=(--no-tty --homedir="${SALT_GPGKEYS_DIR}")
 
@@ -424,7 +449,11 @@ function setup_salt_keys() {
   log_info "Setting up salt keys ..."
 
   mkdir -p "${SALT_KEYS_DIR}/minions"
-  find "${SALT_KEYS_DIR}" -type d -exec chown "${SALT_USER}": {} \;
+  if is_nonroot; then
+    log_info "Non-root mode: skipping key ownership adjustments."
+  else
+    find "${SALT_KEYS_DIR}" -type d -exec chown "${SALT_USER}": {} \;
+  fi
 
   setup_keys_for_service master SALT_MASTER_KEY_FILE "${SALT_KEYS_DIR}"
   [[ "${SALT_MASTER_SIGN_PUBKEY}" == True ]] && _setup_master_sign_keys
@@ -440,8 +469,10 @@ function setup_salt_keys() {
     chmod "${mode}" "${key_file}" >/dev/null 2>&1 ||
       log_warn "  There was an issue updating permissions. However, services may work as expected."
 
-    chown -h "${SALT_USER}": "${key_file}" >/dev/null 2>&1 ||
-      log_warn "  There was an issue updating ownership. However, services may work as expected."
+    if ! is_nonroot; then
+      chown -h "${SALT_USER}": "${key_file}" >/dev/null 2>&1 ||
+        log_warn "  There was an issue updating ownership. However, services may work as expected."
+    fi
   done
 
   log_info "Setting up minions's keys permissions ..."
@@ -484,6 +515,11 @@ function configure_salt_master() {
 #   DESCRIPTION:  Configure salt-api if service is set to be enabled.
 #----------------------------------------------------------------------------------------------------------------------
 function configure_salt_api() {
+  if is_nonroot; then
+    log_warn "Non-root mode: skipping salt-api configuration."
+    return 0
+  fi
+
   rm -f /etc/supervisor/conf.d/salt-api.conf
 
   if [[ -n "${SALT_API_SERVICE_ENABLED}" ]]; then
@@ -571,7 +607,7 @@ stderr_logfile=%(ENV_SALT_LOGS_DIR)s/supervisor/%(program_name)s.log
 command=/usr/local/sbin/salt-master-watchdog.py
 events=PROCESS_STATE
 priority=5
-user=root
+user=%(ENV_SALT_SUPERVISOR_USER)s
 autostart=true
 autorestart=true
 startsecs=1
@@ -586,6 +622,11 @@ EOF
 #   DESCRIPTION:  Configure salt-minion if service is set to be enabled.
 #----------------------------------------------------------------------------------------------------------------------
 function configure_salt_minion() {
+  if is_nonroot; then
+    log_warn "Non-root mode: skipping salt-minion configuration."
+    return 0
+  fi
+
   rm -f /etc/supervisor/conf.d/salt-minion.conf
   [[ ${SALT_MINION_ENABLED,,} == true ]] || return 0
 
@@ -639,7 +680,7 @@ function configure_salt_minion() {
 priority=20
 directory=/tmp
 command=/usr/bin/salt-minion
-user=root
+user=%(ENV_SALT_SUPERVISOR_USER)s
 autostart=true
 autorestart=true
 stopsignal=TERM
@@ -678,10 +719,17 @@ function initialize_datadir() {
   log_info "Configuring directories ..."
 
   # This symlink simplifies paths for loading sls files
-  [[ -d /srv ]] && [[ ! -L /srv ]] && rm -rf /srv
-  ln -sfnv "${SALT_BASE_DIR}" /srv
+  if is_nonroot; then
+    log_info "Non-root mode detected. Skipping system ownership and permission changes."
+    log_info "Non-root mode: skipping /srv symlink setup."
+  else
+    [[ -d /srv ]] && [[ ! -L /srv ]] && rm -rf /srv
+    ln -sfnv "${SALT_BASE_DIR}" /srv
+  fi
   if [[ -w "${SALT_BASE_DIR}" ]]; then
-    chown -R "${SALT_USER}": "${SALT_BASE_DIR}" || log_error "Unable to change '${SALT_BASE_DIR}' ownership"
+    if ! is_nonroot; then
+      chown -R "${SALT_USER}": "${SALT_BASE_DIR}" || log_error "Unable to change '${SALT_BASE_DIR}' ownership"
+    fi
   else
     log_info "${SALT_BASE_DIR} is mounted as a read-only volume. Ownership won't be changed."
   fi
@@ -692,21 +740,29 @@ function initialize_datadir() {
   fi
 
   if [[ -w "${SALT_CONFS_DIR}" ]]; then
-    chown -R "${SALT_USER}": "${SALT_CONFS_DIR}" || log_error "Unable to change '${SALT_CONFS_DIR}' ownership"
+    if ! is_nonroot; then
+      chown -R "${SALT_USER}": "${SALT_CONFS_DIR}" || log_error "Unable to change '${SALT_CONFS_DIR}' ownership"
+    fi
   else
     log_info "${SALT_CONFS_DIR} is mounted as a read-only volume. Ownership won't be changed."
   fi
 
   # Set Salt root permissions
-  chown -R "${SALT_USER}": "${SALT_ROOT_DIR}"
+  if ! is_nonroot; then
+    chown -R "${SALT_USER}": "${SALT_ROOT_DIR}"
+  fi
 
   # Set Salt run permissions
-  mkdir -p /var/run/salt
-  chown -R "${SALT_USER}": /var/run/salt
+  if ! is_nonroot; then
+    mkdir -p /var/run/salt
+    chown -R "${SALT_USER}": /var/run/salt
+  fi
 
   # Set cache permissions
-  mkdir -p /var/cache/salt/master
-  chown -R "${SALT_USER}": /var/cache/salt
+  if ! is_nonroot; then
+    mkdir -p /var/cache/salt/master
+    chown -R "${SALT_USER}": /var/cache/salt
+  fi
 
   # Keys directories
   if [[ ! -w "${SALT_KEYS_DIR}" ]]; then
@@ -720,20 +776,28 @@ function initialize_datadir() {
     exit 1
   fi
   mkdir -p "${SALT_LOGS_DIR}/salt" "${SALT_LOGS_DIR}/supervisor"
-  chmod -R 0755 "${SALT_LOGS_DIR}/supervisor"
-  chown -R "${SALT_USER}": "${SALT_LOGS_DIR}/supervisor"
+  if ! is_nonroot; then
+    chmod -R 0755 "${SALT_LOGS_DIR}/supervisor"
+    chown -R "${SALT_USER}": "${SALT_LOGS_DIR}/supervisor"
+  fi
 
   # Salt formulas
   if [[ -w "${SALT_FORMULAS_DIR}" ]]; then
-    chown -R "${SALT_USER}": "${SALT_FORMULAS_DIR}" || log_error "Unable to change '${SALT_FORMULAS_DIR}' ownership"
+    if ! is_nonroot; then
+      chown -R "${SALT_USER}": "${SALT_FORMULAS_DIR}" || log_error "Unable to change '${SALT_FORMULAS_DIR}' ownership"
+    fi
   else
     log_info "${SALT_FORMULAS_DIR} is mounted as a read-only volume. Ownership won't be changed."
   fi
 
-  [[ -d /var/log/salt ]] && [[ ! -L /var/log/salt ]] && rm -rf /var/log/salt
-  mkdir -p "${SALT_LOGS_DIR}/salt" /var/log
-  ln -sfnv "${SALT_LOGS_DIR}/salt" /var/log/salt
-  chown -R "${SALT_USER}": "${SALT_LOGS_DIR}/salt"
+  if is_nonroot; then
+    log_info "Non-root mode: skipping /var/log/salt symlink setup."
+  else
+    [[ -d /var/log/salt ]] && [[ ! -L /var/log/salt ]] && rm -rf /var/log/salt
+    mkdir -p "${SALT_LOGS_DIR}/salt" /var/log
+    ln -sfnv "${SALT_LOGS_DIR}/salt" /var/log/salt
+    chown -R "${SALT_USER}": "${SALT_LOGS_DIR}/salt"
+  fi
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
@@ -741,6 +805,11 @@ function initialize_datadir() {
 #   DESCRIPTION:  Configure logrotate.
 #----------------------------------------------------------------------------------------------------------------------
 function configure_logrotate() {
+  if is_nonroot; then
+    log_info "Non-root mode: skipping logrotate configuration."
+    return 0
+  fi
+
   log_info "Configuring logrotate ..."
   local LOGROTATE_CONFIG_DIR='/etc/logrotate.d'
   local LOGROTATE_CONFIG_FILE="${LOGROTATE_CONFIG_DIR}/salt-common"
@@ -780,6 +849,11 @@ EOF
 #   DESCRIPTION:  Configure config reloader.
 #----------------------------------------------------------------------------------------------------------------------
 function configure_config_reloader() {
+  if is_nonroot; then
+    log_warn "Non-root mode: skipping config reloader configuration."
+    return 0
+  fi
+
   rm -f /etc/supervisor/conf.d/config-reloader.conf
   [[ "${SALT_RESTART_MASTER_ON_CONFIG_CHANGE,,}" == true ]] || return 0
 
@@ -791,7 +865,7 @@ function configure_config_reloader() {
 priority=20
 directory=/tmp
 command=/usr/local/sbin/config-reloader
-user=root
+user=%(ENV_SALT_SUPERVISOR_USER)s
 autostart=true
 autorestart=true
 stdout_logfile=%(ENV_SALT_LOGS_DIR)s/supervisor/%(program_name)s.log
@@ -831,6 +905,10 @@ function install_python_additional_packages() {
 #   DESCRIPTION:  Initialize the system.
 #----------------------------------------------------------------------------------------------------------------------
 function initialize_system() {
+  if is_nonroot && [[ "$(whoami)" != "${SALT_USER}" ]]; then
+    log_warn "Non-root mode detected but current user is '$(whoami)'. Commands will run as current user."
+  fi
+
   map_uidgid
   initialize_datadir
   configure_logrotate
@@ -842,7 +920,11 @@ function initialize_system() {
   configure_salt_formulas
   configure_config_reloader
   install_python_additional_packages
-  rm -rf /var/run/supervisor.sock
+  if [[ -n "${SALT_SUPERVISOR_SOCK}" ]]; then
+    rm -rf "${SALT_SUPERVISOR_SOCK}" || :
+  else
+    rm -rf /var/run/supervisor.sock || :
+  fi
 
   log_info "System initialized successfully!"
 }
