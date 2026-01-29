@@ -144,8 +144,12 @@ function update_template() {
   (
     export "${VARIABLES[@]}"
     local IFS=":"
-    # shellcheck disable=SC2024
-    sudo -HEu "${USR}" envsubst "${VARIABLES[*]/#/$}" <"${tmp_file}" >"${FILE}"
+    if is_nonroot || [[ "$(id -u)" -ne 0 ]] || [[ "$(whoami)" == "${USR}" ]]; then
+      envsubst "${VARIABLES[*]/#/$}" <"${tmp_file}" >"${FILE}"
+    else
+      # shellcheck disable=SC2024
+      sudo -HEu "${USR}" envsubst "${VARIABLES[*]/#/$}" <"${tmp_file}" >"${FILE}"
+    fi
   )
 
   rm -f "${tmp_file}"
