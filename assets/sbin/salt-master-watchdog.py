@@ -21,7 +21,8 @@ def main():
     while True:
         try:
             headers, data = listener.wait(sys.stdin, sys.stdout)
-            data = dict([pair.split(":") for pair in data.split(" ")])
+            pairs = [p for p in data.strip().split(" ") if p]
+            data = dict(pair.split(":", 1) for pair in pairs if ":" in pair)
 
             logger.debug("Headers: %r", repr(headers))
             logger.debug("Event Data: %r", repr(data))
@@ -41,13 +42,20 @@ def main():
                 else:
                     logger.info("salt-master restarted, restarting salt-api...")
                     subprocess.call(
-                        ["supervisorctl", "restart", "salt-api"], stdout=sys.stderr
+                        [
+                            "supervisorctl",
+                            "-c",
+                            "/etc/supervisor/supervisord.conf",
+                            "restart",
+                            "salt-api",
+                        ],
+                        stdout=sys.stderr,
                     )
 
         except Exception as e:
             logger.critical("Unexpected Exception: %s", str(e))
             listener.fail(sys.stdout)
-            exit(1)
+            continue
         else:
             listener.ok(sys.stdout)
 

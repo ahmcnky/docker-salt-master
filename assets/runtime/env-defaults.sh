@@ -15,10 +15,22 @@ if [[ "${SALT_RUN_AS_NONROOT,,}" == true ]]; then
   export SALT_SUPERVISOR_USER=${SALT_SUPERVISOR_USER:-${SALT_USER}}
   export SALT_SUPERVISOR_PIDFILE=${SALT_SUPERVISOR_PIDFILE:-/tmp/supervisord.pid}
   export SALT_SUPERVISOR_SOCK=${SALT_SUPERVISOR_SOCK:-/tmp/supervisor.sock}
+  export SALT_SUPERVISOR_CONFDIR=${SALT_SUPERVISOR_CONFDIR:-${SALT_DATA_DIR}/supervisor/conf.d}
+  export SALT_API_CERTS_PATH=${SALT_API_CERTS_PATH:-${SALT_DATA_DIR}/pki}
 else
   export SALT_SUPERVISOR_USER=${SALT_SUPERVISOR_USER:-root}
   export SALT_SUPERVISOR_PIDFILE=${SALT_SUPERVISOR_PIDFILE:-/var/run/supervisord.pid}
   export SALT_SUPERVISOR_SOCK=${SALT_SUPERVISOR_SOCK:-/var/run/supervisor.sock}
+  export SALT_SUPERVISOR_CONFDIR=${SALT_SUPERVISOR_CONFDIR:-/etc/supervisor/conf.d}
+  export SALT_API_CERTS_PATH=${SALT_API_CERTS_PATH:-/etc/pki}
+fi
+
+if [[ -x /usr/bin/python3 ]]; then
+  export SALT_PYTHON=${SALT_PYTHON:-/usr/bin/python3}
+elif [[ -x /opt/saltstack/salt/bin/python3 ]]; then
+  export SALT_PYTHON=${SALT_PYTHON:-/opt/saltstack/salt/bin/python3}
+else
+  export SALT_PYTHON=${SALT_PYTHON:-python3}
 fi
 
 #####            Salt API            #####

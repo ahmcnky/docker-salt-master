@@ -519,12 +519,7 @@ function configure_salt_master() {
 #   DESCRIPTION:  Configure salt-api if service is set to be enabled.
 #----------------------------------------------------------------------------------------------------------------------
 function configure_salt_api() {
-  if is_nonroot; then
-    log_warn "Non-root mode: skipping salt-api configuration."
-    return 0
-  fi
-
-  rm -f /etc/supervisor/conf.d/salt-api.conf
+  rm -f "${SALT_SUPERVISOR_CONFDIR}/salt-api.conf"
 
   if [[ -n "${SALT_API_SERVICE_ENABLED}" ]]; then
     log_deprecated 3008 "SALT_API_SERVICE_ENABLED is deprecated. Use SALT_API_ENABLED instead." || return 1
@@ -534,41 +529,62 @@ function configure_salt_api() {
   [[ ${SALT_API_ENABLED,,} == true || -n "${SALTGUI_VERSION}" ]] || return 0
 
   if [[ -n "${SALT_API_USER}" ]]; then
+    if is_nonroot && [[ "${SALT_API_USER}" != "${SALT_USER}" ]]; then
+      log_warn "Non-root mode: forcing SALT_API_USER to '${SALT_USER}'."
+      SALT_API_USER="${SALT_USER}"
+    fi
 
     if [[ ${SALT_API_USER} == "${SALT_USER}" ]]; then
-      log_error "SALT_API_USER cannot be the same as '${SALT_USER}'."
-      return 1
-    fi
-
-    if [[ -n "${SALT_API_USER_PASS_FILE}" ]]; then
-      if [[ ! -f "${SALT_API_USER_PASS_FILE}" ]]; then
-        log_error "SALT_API_USER_PASS_FILE '${SALT_API_USER_PASS_FILE}' does not exist."
+      if is_nonroot; then
+        log_info "Non-root mode: using existing user '${SALT_USER}' for salt-api."
+      else
+        log_error "SALT_API_USER cannot be the same as '${SALT_USER}'."
         return 1
-      elif [[ -n "${SALT_API_USER_PASS}" ]]; then
-        log_warn "SALT_API_USER_PASS_FILE and SALT_API_USER_PASS cannot be set at the same time. The first one will be used."
       fi
-      SALT_API_USER_PASS="$(cat "${SALT_API_USER_PASS_FILE}")"
     fi
 
-    if [[ -z "${SALT_API_USER_PASS}" ]]; then
-      log_error "SALT_API_USER_PASS env variable must be set to create '${SALT_API_USER}' user."
-      return 2
+    if ! is_nonroot; then
+      if [[ -n "${SALT_API_USER_PASS_FILE}" ]]; then
+        if [[ ! -f "${SALT_API_USER_PASS_FILE}" ]]; then
+          log_error "SALT_API_USER_PASS_FILE '${SALT_API_USER_PASS_FILE}' does not exist."
+          return 1
+        elif [[ -n "${SALT_API_USER_PASS}" ]]; then
+          log_warn "SALT_API_USER_PASS_FILE and SALT_API_USER_PASS cannot be set at the same time. The first one will be used."
+        fi
+        SALT_API_USER_PASS="$(cat "${SALT_API_USER_PASS_FILE}")"
+      fi
+
+      if [[ -z "${SALT_API_USER_PASS}" ]]; then
+        log_error "SALT_API_USER_PASS env variable must be set to create '${SALT_API_USER}' user."
+        return 2
+      fi
     fi
 
-    if ! id -u "${SALT_API_USER}" &>/dev/null; then
-      log_info "Creating '${SALT_API_USER}' user for salt-api ..."
-      adduser --quiet --disabled-password --gecos "Salt API" "${SALT_API_USER}"
+    if is_nonroot; then
+      if [[ -n "${SALT_API_USER_PASS}" || -n "${SALT_API_USER_PASS_FILE}" ]]; then
+        log_warn "Non-root mode: SALT_API_USER_PASS is ignored when using '${SALT_USER}'."
+      fi
+    else
+      if ! id -u "${SALT_API_USER}" &>/dev/null; then
+        log_info "Creating '${SALT_API_USER}' user for salt-api ..."
+        adduser --quiet --disabled-password --gecos "Salt API" "${SALT_API_USER}"
+      fi
+      echo "${SALT_API_USER}:${SALT_API_USER_PASS}" | chpasswd
+      unset SALT_API_USER_PASS
     fi
-    echo "${SALT_API_USER}:${SALT_API_USER_PASS}" | chpasswd
-    unset SALT_API_USER_PASS
   fi
 
   log_info "Configuring salt-api service ..."
 
-  CERTS_PATH=/etc/pki
+  CERTS_PATH="${SALT_API_CERTS_PATH}"
+  mkdir -p "${CERTS_PATH}/tls/certs"
   rm -rf "${CERTS_PATH}"/tls/certs/*
-  salt-call --local tls.create_self_signed_cert cacert_path="${CERTS_PATH}" CN="${SALT_API_CERT_CN}"
-  chown "${SALT_USER}": "${CERTS_PATH}/tls/certs/${SALT_API_CERT_CN}".{crt,key}
+  salt-call --local \
+    --log-file "${SALT_LOGS_DIR}/salt/minion" \
+    tls.create_self_signed_cert cacert_path="${CERTS_PATH}" CN="${SALT_API_CERT_CN}"
+  if ! is_nonroot; then
+    chown "${SALT_USER}": "${CERTS_PATH}/tls/certs/${SALT_API_CERT_CN}".{crt,key}
+  fi
 
   cat >>"${SALT_ROOT_DIR}/master" <<EOF
 
@@ -595,7 +611,7 @@ EOF
   fi
 
   # configure supervisord to start salt-api
-  cat >/etc/supervisor/conf.d/salt-api.conf <<EOF
+  cat >"${SALT_SUPERVISOR_CONFDIR}/salt-api.conf" <<EOF
 [program:salt-api]
 priority=10
 directory=/tmp
@@ -608,7 +624,7 @@ stdout_logfile=%(ENV_SALT_LOGS_DIR)s/supervisor/%(program_name)s.log
 stderr_logfile=%(ENV_SALT_LOGS_DIR)s/supervisor/%(program_name)s.log
 
 [eventlistener:salt-master-watchdog]
-command=/usr/local/sbin/salt-master-watchdog.py
+command=%(ENV_SALT_PYTHON)s /usr/local/sbin/salt-master-watchdog.py
 events=PROCESS_STATE
 priority=5
 user=%(ENV_SALT_SUPERVISOR_USER)s
@@ -631,7 +647,7 @@ function configure_salt_minion() {
     return 0
   fi
 
-  rm -f /etc/supervisor/conf.d/salt-minion.conf
+  rm -f "${SALT_SUPERVISOR_CONFDIR}/salt-minion.conf"
   [[ ${SALT_MINION_ENABLED,,} == true ]] || return 0
 
   log_info "Configuring salt-minion service ..."
@@ -679,7 +695,7 @@ function configure_salt_minion() {
 
   # Configure supervisord to start salt-minion
   log_info " ==> Configuring supervisord to start salt-minion ..."
-  cat >/etc/supervisor/conf.d/salt-minion.conf <<EOF
+  cat >"${SALT_SUPERVISOR_CONFDIR}/salt-minion.conf" <<EOF
 [program:salt-minion]
 priority=20
 directory=/tmp
@@ -849,6 +865,27 @@ EOF
 }
 
 #---  FUNCTION  -------------------------------------------------------------------------------------------------------
+#          NAME:  prepare_supervisor_conf_dir
+#   DESCRIPTION:  Ensure supervisor conf dir exists and is populated.
+#----------------------------------------------------------------------------------------------------------------------
+function prepare_supervisor_conf_dir() {
+  local default_dir="/etc/supervisor/conf.d"
+
+  mkdir -p "${SALT_SUPERVISOR_CONFDIR}"
+
+  if [[ "${SALT_SUPERVISOR_CONFDIR}" != "${default_dir}" && -d "${default_dir}" ]]; then
+    local conf_file=
+    for conf_file in "${default_dir}"/*.conf; do
+      [[ -f "${conf_file}" ]] || continue
+      local conf_name=
+      conf_name="$(basename "${conf_file}")"
+      [[ -f "${SALT_SUPERVISOR_CONFDIR}/${conf_name}" ]] && continue
+      cp -a "${conf_file}" "${SALT_SUPERVISOR_CONFDIR}/${conf_name}" 2>/dev/null || :
+    done
+  fi
+}
+
+#---  FUNCTION  -------------------------------------------------------------------------------------------------------
 #          NAME:  configure_cron
 #   DESCRIPTION:  Enable/disable cron service.
 #----------------------------------------------------------------------------------------------------------------------
@@ -878,13 +915,13 @@ function configure_config_reloader() {
     return 0
   fi
 
-  rm -f /etc/supervisor/conf.d/config-reloader.conf
+  rm -f "${SALT_SUPERVISOR_CONFDIR}/config-reloader.conf"
   [[ "${SALT_RESTART_MASTER_ON_CONFIG_CHANGE,,}" == true ]] || return 0
 
   log_info "Configuring config reloader ..."
 
   # configure supervisord to start config-reloader
-  cat >/etc/supervisor/conf.d/config-reloader.conf <<EOF
+  cat >"${SALT_SUPERVISOR_CONFDIR}/config-reloader.conf" <<EOF
 [program:config-reloader]
 priority=20
 directory=/tmp
@@ -936,6 +973,7 @@ function initialize_system() {
   map_uidgid
   initialize_datadir
   configure_logrotate
+  prepare_supervisor_conf_dir
   configure_cron
   configure_timezone
   configure_salt_master
